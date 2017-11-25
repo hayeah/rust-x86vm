@@ -10,8 +10,10 @@ use hexplay::HexViewBuilder;
 mod errors;
 mod macho;
 mod parser;
+mod vm;
 
 use errors::*;
+
 
 fn run() -> Result<()> {
     let args: Vec<String> = ::std::env::args().collect();
@@ -36,6 +38,13 @@ fn run() -> Result<()> {
     let text = bin.text().chain_err(|| "cannot find program text")?;
     let view = HexViewBuilder::new(&text).row_width(16).finish();
     println!("text\n: {}", view);
+
+    // 1024 KB
+    let mut m = vm::VM::new(1024 * 1024);
+
+    m.run(&bin).chain_err(|| "cannot run binary with VM")?;
+
+    println!("exit: {}", m.exit_status.unwrap());
 
     return Ok(());
 }

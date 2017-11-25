@@ -6,6 +6,7 @@ pub struct Macho {
     data: Vec<u8>,
 }
 
+use vm::X86Registers;
 use macho::*;
 use errors::*;
 
