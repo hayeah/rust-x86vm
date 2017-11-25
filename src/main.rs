@@ -18,13 +18,11 @@ fn run() -> Result<()> {
     let mut bin: Vec<u8> = vec![];
     f.read_to_end(&mut bin).chain_err(|| "error reading bin")?;
 
-    let p = parser::MachOParser::new(bin);
-    let h = p.parse_header().chain_err(|| "failed to parse header")?;
-    println!("header: {:?}", h);
+    let bin = parser::Macho::parse_bin(&bin).chain_err(
+        || "parse MachO binary failed",
+    )?;
 
-    let lcs = p.parse_load_commands(&h).chain_err(|| "failed to load commands")?;
-
-    println!("load commands: {:#?}", lcs);
+    println!("bin: {:#?}", bin);
 
     return Ok(());
 }

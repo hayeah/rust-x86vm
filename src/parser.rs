@@ -2,7 +2,7 @@ use std;
 use byteorder::{LittleEndian, ReadBytesExt};
 use std::io::Cursor;
 
-pub struct MachOParser {
+pub struct Macho {
     data: Vec<u8>,
 }
 
@@ -14,9 +14,24 @@ const LC_SEGMENT_HEADER_SIZE: usize = 56;
 const LC_SEGMENT_SECTION_HEADER_SIZE: usize = 68;
 const LC_UNIXTHREAD_SIZE: usize = 80;
 
-impl MachOParser {
-    pub fn new(data: Vec<u8>) -> MachOParser {
-        MachOParser { data: data }
+impl Macho {
+    pub fn new(data: Vec<u8>) -> Macho {
+        Macho { data: data }
+    }
+
+    pub fn parse_bin(data: &[u8]) -> Result<Bin> {
+        let data = data.to_vec();
+
+        let parser = Macho { data: data };
+        let header = parser.parse_header().chain_err(|| "header parse fail")?;
+        let lcs = parser.parse_load_commands(&header).chain_err(
+            || "header parse fail",
+        )?;
+
+        return Ok(Bin {
+            header: header,
+            load_commands: lcs,
+        });
     }
 
     pub fn parse_header(&self) -> Result<Header> {
@@ -45,9 +60,12 @@ impl MachOParser {
         });
     }
 
-    pub fn parse_load_commands(&self, header: &Header) -> Result<Vec<LoadCommand>> {
+    pub fn parse_load_commands(&self, header: &Header) -> Result<LoadCommands> {
         let data = &self.data[HEADERSIZE..];
-        let mut lcs: Vec<LoadCommand> = Vec::with_capacity(header.load_commands_count as usize);
+
+        let mut segments: Vec<Segment> = Vec::new();
+        let mut unsupported: Vec<UnsupportedLoadCommand> = Vec::new();
+        let mut unixthread: Option<UnixThread> = None;
 
         let mut pos: usize = 0;
         for _ in 0..header.load_commands_count {
@@ -65,25 +83,45 @@ impl MachOParser {
 
             let segdata = &data[pos..pos + size];
 
-            let lc = match cmd {
-                1 => self.parse_lc_segment(segdata),
-                5 => self.parse_lc_unixthread(segdata),
-                _ => Ok(LoadCommand::Unsupported {
-                    cmd: cmd,
-                    size: size,
-                    // data: segdata.to_vec(),
-                }),
-            }.chain_err(|| "load commands parsing error")?;
+            match cmd {
+                1 => {
+                    let segment = self.parse_lc_segment(segdata).chain_err(
+                        || "LC_SEGMENT parse error",
+                    )?;
 
-            lcs.push(lc);
+                    segments.push(segment);
+                }
+                5 => {
+                    let ut = self.parse_lc_unixthread(segdata).chain_err(
+                        || "LC_UNIXTHREAD parse error",
+                    )?;
+
+                    unixthread = Some(ut);
+                }
+                _ => {
+                    unsupported.push(UnsupportedLoadCommand {
+                        cmd: cmd,
+                        size: size,
+                        // data: segdata.to_vec(),
+                    })
+                }
+            };
 
             pos += size as usize;
         }
 
-        return Ok(lcs);
+        if unixthread.is_none() {
+            bail!("did not find LC_UNIXTHREAD");
+        }
+
+        return Ok(LoadCommands {
+            segments: segments,
+            unsupported: unsupported,
+            unixthread: unixthread.unwrap(),
+        });
     }
 
-    fn parse_lc_unixthread(&self, data: &[u8]) -> Result<LoadCommand> {
+    fn parse_lc_unixthread(&self, data: &[u8]) -> Result<UnixThread> {
         let mut words = [0 as u32; LC_UNIXTHREAD_SIZE / 4];
         let mut r = Cursor::new(data);
         r.read_u32_into::<LittleEndian>(&mut words).chain_err(
@@ -92,14 +130,14 @@ impl MachOParser {
 
         let registers = X86Registers::from(&words[4..4 + 16]);
 
-        return Ok(LoadCommand::UnixThread {
+        return Ok(UnixThread {
             flavor: words[2],
             count: words[3],
             registers: registers,
         });
     }
 
-    fn parse_lc_segment(&self, data: &[u8]) -> Result<LoadCommand> {
+    fn parse_lc_segment(&self, data: &[u8]) -> Result<Segment> {
         let mut r = Cursor::new(data);
 
         let mut buf = [0 as u32; LC_SEGMENT_HEADER_SIZE / 4];
@@ -126,7 +164,7 @@ impl MachOParser {
             section_pos += LC_SEGMENT_SECTION_HEADER_SIZE;
         }
 
-        return Ok(LoadCommand::Segment {
+        return Ok(Segment {
             name: name,
             vm_address: buf[6],
             vm_sizes: buf[7],
