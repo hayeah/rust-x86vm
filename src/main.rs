@@ -14,9 +14,16 @@ mod parser;
 use errors::*;
 
 fn run() -> Result<()> {
-    let mut f = File::open("../program").chain_err(
-        || "cannot open program file",
-    )?;
+    let args: Vec<String> = ::std::env::args().collect();
+
+    println!("args: {:?}", args);
+    if args.len() < 2 {
+        bail!("please specify a MachO binary to load");
+    }
+
+    let program = &args[1];
+
+    let mut f = File::open(program).chain_err(|| "cannot open program file")?;
     let mut data: Vec<u8> = vec![];
     f.read_to_end(&mut data).chain_err(|| "error reading bin")?;
 
@@ -24,12 +31,10 @@ fn run() -> Result<()> {
         || "parse MachO binary failed",
     )?;
 
-    println!("bin: {:#?}", bin);
+    // println!("bin: {:#?}", bin);
 
     let text = bin.text().chain_err(|| "cannot find program text")?;
-
     let view = HexViewBuilder::new(&text).row_width(16).finish();
-
     println!("text\n: {}", view);
 
     return Ok(());
