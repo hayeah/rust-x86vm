@@ -14,12 +14,35 @@ struct MachOBin<'a> {
 
 struct LoadCommand {
     cmd: u32,
-    bin:  [u8],
+    size: u32,
 }
 
-struct LoadCommandsIterator {
-    data: [u8],
+const LC_SEGMENT: u32 = 1;
+const LC_UNIXTHREAD: u32 = 5;
+
+struct LCSegment<'a> {
+    name: &'a [u8],
 }
+
+struct TextSection<'a> {
+    name: &'a mut [u8;16],
+    address: u32,
+    size: u32,
+}
+
+impl<'a> TextSection<'a> {
+    fn new(name: &'a mut [u8;16]) -> TextSection<'a> {
+        TextSection {
+            name: name,
+            address: 0,
+            size: 0,
+        }
+    }
+}
+
+const HEADERSIZE: u64 = 0x1c;
+const TEXT_SEGMENT_HEADER_SIZE: u64 = 56;
+const TEXT_SECTION_HEADER_SIZE: u64 = 68;
 
 impl<'a> MachOBin<'a> {
     fn new(data: &'a [u8]) -> MachOBin {
@@ -43,6 +66,62 @@ impl<'a> MachOBin<'a> {
         let load_cmd_size: u32 = self.read();
 
         println!("load cmd(count={},size={})", load_cmd_count, load_cmd_size);
+
+        self.seek(HEADERSIZE);
+
+        for _ in 0..load_cmd_count {
+            let segstart = self.r.position();
+            let cmd = self.read();
+            let size = self.read();
+
+            // self.r.read_exact
+
+            match cmd {
+                LC_SEGMENT => {
+                    let mut buf = [0;16];
+
+                    self.r.read_exact(&mut buf).unwrap();
+
+                    let name = std::str::from_utf8(&buf).unwrap().trim_matches('\0');
+
+                    println!("segment name: (len={}) {:?} ", name.len(), name);
+
+                    if name == "__TEXT" {
+                        self.seek(segstart+(48 as u64));
+                        let sections_count: u32 = self.read();
+                        for i in 0..sections_count {
+                            let mut buf: [u8; 16] = [0; 16];
+                            let mut ts = TextSection::new(&mut buf);
+                            let secstart = segstart + TEXT_SEGMENT_HEADER_SIZE + TEXT_SECTION_HEADER_SIZE * i as u64;
+                            self.parse_text_section(secstart, &mut ts);
+
+                            let name = std::str::from_utf8(ts.name).unwrap().trim_matches('\0');
+                            println!("section name: (address={:x}) (size={}) {:?} ", ts.address, ts.size, name);
+                        }
+                    }
+
+                },
+                _ => println!("unrecognized load command type: {}", cmd),
+            };
+
+            self.seek(segstart + size as u64);
+        }
+    }
+
+    // fn parse_text_sections() {
+
+    // }
+
+    fn parse_text_section(&mut self, offset: u64, ts: &mut TextSection) {
+        self.seek(offset);
+        self.r.read_exact(ts.name).unwrap();
+
+        self.seek(offset+32);
+        let address: u32 = self.read();
+        let size: u32 = self.read();
+
+        ts.size = size;
+        ts.address = address;
     }
 
     fn seek(&mut self, pos: u64) {
