@@ -23,6 +23,7 @@ const LC_UNIXTHREAD: u32 = 5;
 const HEADERSIZE: usize = 0x1c;
 const LC_SEGMENT_HEADER_SIZE: usize = 56;
 const LC_SEGMENT_SECTION_HEADER_SIZE: usize = 68;
+const LC_UNIXTHREAD_SIZE: usize = 80;
 
 fn readname(data: &[u8]) -> String {
     unsafe {
@@ -80,6 +81,57 @@ impl SectionHeader {
 }
 
 #[derive(Debug)]
+struct X86Registers {
+    eax: u32,
+    ebx: u32,
+    ecx: u32,
+    edx: u32,
+
+    edi: u32,
+    esi: u32,
+    ebp: u32,
+    esp: u32,
+
+    ss: u32,
+    eflags: u32,
+    eip: u32,
+    cs: u32,
+
+    ds: u32,
+    es: u32,
+    fs: u32,
+    gs: u32,
+}
+
+impl X86Registers {
+    fn from(words: &[u32]) -> X86Registers {
+        return X86Registers{
+            eax: words[0],
+            ebx: words[1],
+            ecx: words[2],
+            edx: words[3],
+
+            edi: words[4],
+            esi: words[5],
+            ebp: words[6],
+            esp: words[7],
+
+            ss: words[8],
+            eflags: words[9],
+            eip: words[10],
+            cs: words[11],
+
+            ds: words[12],
+            es: words[13],
+            fs: words[14],
+            gs: words[15],
+        }
+    }
+}
+
+
+
+#[derive(Debug)]
 enum LoadCommand {
     Segment {
         name: String, // 2 .. 5
@@ -97,7 +149,12 @@ enum LoadCommand {
 
     Symtab {},
 
-    UnixThread {},
+    UnixThread {
+        flavor: u32,
+        count: u32,
+
+        registers: X86Registers,
+    },
 
     // just put the size/offset here
     Unsupported {
@@ -165,6 +222,7 @@ impl MachOParser {
 
             let lc = match cmd {
                 1 => self.parse_lc_segment(segdata),
+                5 => self.parse_lc_unixthread(segdata),
                 _ => Ok(LoadCommand::Unsupported {
                     cmd: cmd,
                     size: size,
@@ -178,6 +236,22 @@ impl MachOParser {
         }
 
         return Ok(lcs);
+    }
+
+    fn parse_lc_unixthread(&self, data: &[u8]) -> Result<LoadCommand> {
+        let mut words = [0 as u32; LC_UNIXTHREAD_SIZE / 4];
+        let mut r = Cursor::new(data);
+        r.read_u32_into::<LittleEndian>(&mut words).chain_err(
+            || "LC_UNIXTHREAD read fail",
+        )?;
+
+        let registers = X86Registers::from(&words[4..4+16]);
+
+        return Ok(LoadCommand::UnixThread{
+            flavor: words[2],
+            count: words[3],
+            registers: registers,
+        });
     }
 
     fn parse_lc_segment(&self, data: &[u8]) -> Result<LoadCommand> {
