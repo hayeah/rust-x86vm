@@ -4,7 +4,7 @@ use std::fs::File;
 use std::io::prelude::*;
 
 use std::io::{Cursor, SeekFrom};
-use byteorder::{LittleEndian, ReadBytesExt};
+use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 
 #[macro_use]
 extern crate error_chain;
@@ -16,11 +16,6 @@ mod errors {
 
 use errors::*;
 
-struct LoadCommand {
-    cmd: u32,
-    size: u32,
-}
-
 const LC_SEGMENT: u32 = 1;
 const LC_UNIXTHREAD: u32 = 5;
 
@@ -29,13 +24,13 @@ struct LCSegment<'a> {
 }
 
 struct TextSection<'a> {
-    name: &'a mut [u8;16],
+    name: &'a mut [u8; 16],
     address: u32,
     size: u32,
 }
 
 impl<'a> TextSection<'a> {
-    fn new(name: &'a mut [u8;16]) -> TextSection<'a> {
+    fn new(name: &'a mut [u8; 16]) -> TextSection<'a> {
         TextSection {
             name: name,
             address: 0,
@@ -44,8 +39,8 @@ impl<'a> TextSection<'a> {
     }
 }
 
-const HEADERSIZE: u64 = 0x1c;
-const TEXT_SEGMENT_HEADER_SIZE: u64 = 56;
+const HEADERSIZE: usize = 0x1c;
+const LC_SEGMENT_HEADER_SIZE: usize = 56;
 const TEXT_SECTION_HEADER_SIZE: u64 = 68;
 
 #[derive(Debug)]
@@ -59,15 +54,45 @@ struct Header {
     flags: u32,
 }
 
+#[derive(Debug)]
+struct SectionHeader {}
+
+#[derive(Debug)]
+enum LoadCommand {
+    Segment {
+        name: String, // 2 .. 5
+        vm_address: u32, // 6
+        vm_sizes: u32,
+        file_offset: u32,
+        file_size: u32,
+        max_vm_protection: u32,
+        initial_vm_protection: u32,
+        number_of_sections: u32,
+        flags: u32,
+
+        // sections: Vec<SectionHeader>,
+    },
+
+    Symtab {},
+
+    UnixThread {},
+
+    // just put the size/offset here
+    Unsupported {
+        cmd: u32,
+        size: usize,
+
+        // data: Vec<u8>,
+    },
+}
+
 struct MachOParser {
     data: Vec<u8>,
 }
 
 impl MachOParser {
     fn new(data: Vec<u8>) -> MachOParser {
-        MachOParser {
-            data: data,
-        }
+        MachOParser { data: data }
     }
 
     fn parse_header(&self) -> Result<Header> {
@@ -75,7 +100,9 @@ impl MachOParser {
 
         let mut buf = [0 as u32; 7];
 
-        r.read_u32_into::<LittleEndian>(&mut buf).chain_err(|| "header read fail")?;
+        r.read_u32_into::<LittleEndian>(&mut buf).chain_err(
+            || "header read fail",
+        )?;
 
         let magic = buf[0];
 
@@ -83,7 +110,7 @@ impl MachOParser {
             bail!("invalid MachO magic number")
         }
 
-        return Ok(Header{
+        return Ok(Header {
             magic: buf[0],
             cpu_type: buf[1],
             cpu_subtype: buf[2],
@@ -93,107 +120,92 @@ impl MachOParser {
             flags: buf[6],
         });
     }
+
+    fn parse_load_commands(&self, header: &Header) -> Result<Vec<LoadCommand>> {
+        let data = &self.data[HEADERSIZE..];
+        let mut lcs: Vec<LoadCommand> = Vec::with_capacity(header.load_commands_count as usize);
+
+        let mut pos: usize = 0;
+        for _ in 0..header.load_commands_count {
+            let segdata = &data[pos..];
+
+            let mut r = Cursor::new(&segdata);
+
+            let mut buf = [0 as u32; 2];
+            r.read_u32_into::<LittleEndian>(&mut buf).chain_err(
+                || "header read fail",
+            )?;
+
+            let cmd = buf[0];
+            let size = buf[1] as usize;
+
+            let segdata = &data[pos..pos+size];
+
+            let lc = match cmd {
+                1 => self.parse_lc_segment(segdata),
+                _ => Ok(LoadCommand::Unsupported {
+                    cmd: cmd,
+                    size: size,
+                    // data: segdata.to_vec(),
+                }),
+            }.chain_err(|| "load commands parsing error")?;
+
+            lcs.push(lc);
+
+            pos += size as usize;
+        }
+
+        return Ok(lcs);
+    }
+
+    fn parse_lc_segment(&self, data: &[u8]) -> Result<LoadCommand> {
+        let mut r = Cursor::new(data);
+
+        let mut buf = [0 as u32; LC_SEGMENT_HEADER_SIZE / 4];
+        r.read_u32_into::<LittleEndian>(&mut buf).chain_err(
+            || "LC_SEGMENT read fail",
+        )?;
+
+        // read 16 bytes of segment name
+        let mut namebuf = [0 as u8; 16];
+        {
+            let mut p = &mut namebuf[..];
+            for word in &buf[2..6] {
+                p.write_u32::<LittleEndian>(*word).unwrap();
+            }
+        }
+
+        let name = String::from(std::str::from_utf8(&namebuf).unwrap().trim_matches('\0'));
+
+        return Ok(LoadCommand::Segment{
+            name: name,
+            vm_address: buf[6],
+            vm_sizes: buf[7],
+            file_offset: buf[8],
+            file_size: buf[9],
+            max_vm_protection: buf[10],
+            initial_vm_protection: buf[11],
+            number_of_sections: buf[12],
+            flags: buf[13],
+        });
+    }
 }
 
-// impl<'a> MachOBin<'a> {
-//     fn new(data: &'a [u8]) -> MachOBin {
-//         MachOBin {
-//             data: data,
-//             r: Cursor::new(data),
-//         }
-//     }
-
-//     fn valid_magic(&mut self) -> bool {
-//         // let mut r = Cursor::new(&self.data[0..4]);
-//         self.seek(0);
-//         self.read() == 0xfeedface
-//     }
-
-//     fn process_load_commands(&mut self) {
-//         // let mut r = Cursor::new(&self.data[..]);
-//         self.seek(0x10);
-
-//         let load_cmd_count: u32 = self.read();
-//         let load_cmd_size: u32 = self.read();
-
-//         println!("load cmd(count={},size={})", load_cmd_count, load_cmd_size);
-
-//         self.seek(HEADERSIZE);
-
-//         for _ in 0..load_cmd_count {
-//             let segstart = self.r.position();
-//             let cmd = self.read();
-//             let size = self.read();
-
-//             // self.r.read_exact
-
-//             match cmd {
-//                 LC_SEGMENT => {
-//                     let mut buf = [0;16];
-
-//                     self.r.read_exact(&mut buf).unwrap();
-
-//                     let name = std::str::from_utf8(&buf).unwrap().trim_matches('\0');
-
-//                     println!("segment name: (len={}) {:?} ", name.len(), name);
-
-//                     if name == "__TEXT" {
-//                         self.seek(segstart+(48 as u64));
-//                         let sections_count: u32 = self.read();
-//                         for i in 0..sections_count {
-//                             let mut buf: [u8; 16] = [0; 16];
-//                             let mut ts = TextSection::new(&mut buf);
-//                             let secstart = segstart + TEXT_SEGMENT_HEADER_SIZE + TEXT_SECTION_HEADER_SIZE * i as u64;
-//                             self.parse_text_section(secstart, &mut ts);
-
-//                             let name = std::str::from_utf8(ts.name).unwrap().trim_matches('\0');
-//                             println!("section name: (address={:x}) (size={}) {:?} ", ts.address, ts.size, name);
-//                         }
-//                     }
-
-//                 },
-//                 _ => println!("unrecognized load command type: {}", cmd),
-//             };
-
-//             self.seek(segstart + size as u64);
-//         }
-//     }
-
-//     // fn parse_text_sections() {
-
-//     // }
-
-//     fn parse_text_section(&mut self, offset: u64, ts: &mut TextSection) {
-//         self.seek(offset);
-//         self.r.read_exact(ts.name).unwrap();
-
-//         self.seek(offset+32);
-//         let address: u32 = self.read();
-//         let size: u32 = self.read();
-
-//         ts.size = size;
-//         ts.address = address;
-//     }
-
-//     fn seek(&mut self, pos: u64) {
-//         self.r.seek(SeekFrom::Start(pos)).unwrap();
-//     }
-
-//     fn read(&mut self) -> u32 {
-//         return self.r.read_u32::<LittleEndian>().unwrap();
-//     }
-
-//     //
-// }
-
 fn run() -> Result<()> {
-    let mut f = File::open("../program").chain_err(|| "cannot open program file")?;
+    let mut f = File::open("../program").chain_err(
+        || "cannot open program file",
+    )?;
     let mut bin: Vec<u8> = vec![];
     f.read_to_end(&mut bin).chain_err(|| "error reading bin")?;
 
     let p = MachOParser::new(bin);
     let h = p.parse_header().chain_err(|| "failed to parse header")?;
     println!("header: {:?}", h);
+
+    let lcs = p.parse_load_commands(&h).chain_err(|| "failed to load commands")?;
+
+    println!("load commands: {:#?}", lcs);
+
     return Ok(());
 }
 
