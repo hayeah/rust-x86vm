@@ -19,29 +19,17 @@ use errors::*;
 const LC_SEGMENT: u32 = 1;
 const LC_UNIXTHREAD: u32 = 5;
 
-struct LCSegment<'a> {
-    name: &'a [u8],
-}
-
-struct TextSection<'a> {
-    name: &'a mut [u8; 16],
-    address: u32,
-    size: u32,
-}
-
-impl<'a> TextSection<'a> {
-    fn new(name: &'a mut [u8; 16]) -> TextSection<'a> {
-        TextSection {
-            name: name,
-            address: 0,
-            size: 0,
-        }
-    }
-}
 
 const HEADERSIZE: usize = 0x1c;
 const LC_SEGMENT_HEADER_SIZE: usize = 56;
-const TEXT_SECTION_HEADER_SIZE: u64 = 68;
+const LC_SEGMENT_SECTION_HEADER_SIZE: usize = 68;
+
+fn readname(data: &[u8]) -> String {
+    unsafe {
+        let s = std::str::from_utf8_unchecked(data).trim_matches('\0');
+        return String::from(s);
+    }
+}
 
 #[derive(Debug)]
 struct Header {
@@ -55,7 +43,41 @@ struct Header {
 }
 
 #[derive(Debug)]
-struct SectionHeader {}
+struct SectionHeader {
+    // 0..16
+    section_name: String,
+    // 16..32
+    segment_name: String,
+    // 32
+    address: u32,
+    size: u32,
+    offset: u32,
+    alignment: u32,
+    // relocations_ffset: u32,
+}
+
+impl SectionHeader {
+    fn parse(data: &[u8]) -> Result<SectionHeader> {
+        let section_name = readname(&data[0..16]);
+        let segment_name = readname(&data[0..16]);
+
+        let mut words = [0 as u32; LC_SEGMENT_SECTION_HEADER_SIZE / 4];
+
+        let mut r = Cursor::new(data);
+        r.read_u32_into::<LittleEndian>(&mut words).chain_err(
+            || "section header read fail",
+        )?;
+
+        return Ok(SectionHeader{
+            section_name: section_name,
+            segment_name: segment_name,
+            address: words[8],
+            size: words[9],
+            offset: words[10],
+            alignment: words[11],
+        });
+    }
+}
 
 #[derive(Debug)]
 enum LoadCommand {
@@ -70,7 +92,7 @@ enum LoadCommand {
         number_of_sections: u32,
         flags: u32,
 
-        // sections: Vec<SectionHeader>,
+        section_headers: Vec<SectionHeader>,
     },
 
     Symtab {},
@@ -163,19 +185,24 @@ impl MachOParser {
 
         let mut buf = [0 as u32; LC_SEGMENT_HEADER_SIZE / 4];
         r.read_u32_into::<LittleEndian>(&mut buf).chain_err(
-            || "LC_SEGMENT read fail",
+            || "LC_SEGMENT read failed",
         )?;
 
-        // read 16 bytes of segment name
-        let mut namebuf = [0 as u8; 16];
-        {
-            let mut p = &mut namebuf[..];
-            for word in &buf[2..6] {
-                p.write_u32::<LittleEndian>(*word).unwrap();
-            }
-        }
+        // read 16 bytes as segment name from offset 8
+        let name = readname(&data[8..8+16]);
 
-        let name = String::from(std::str::from_utf8(&namebuf).unwrap().trim_matches('\0'));
+        let number_of_sections = buf[12];
+
+        let mut section_headers: Vec<SectionHeader> = Vec::with_capacity(number_of_sections as usize);
+        let sections_data = &data[LC_SEGMENT_HEADER_SIZE..];
+        let mut section_pos = 0;
+        for _ in 0..number_of_sections {
+            let sh = SectionHeader::parse(&sections_data[section_pos..section_pos+LC_SEGMENT_SECTION_HEADER_SIZE]).chain_err(|| "section header parse failed")?;
+
+            section_headers.push(sh);
+
+            section_pos += LC_SEGMENT_SECTION_HEADER_SIZE;
+        }
 
         return Ok(LoadCommand::Segment{
             name: name,
@@ -185,8 +212,9 @@ impl MachOParser {
             file_size: buf[9],
             max_vm_protection: buf[10],
             initial_vm_protection: buf[11],
-            number_of_sections: buf[12],
+            number_of_sections: number_of_sections,
             flags: buf[13],
+            section_headers: section_headers,
         });
     }
 }
