@@ -1,9 +1,11 @@
 extern crate byteorder;
 #[macro_use]
 extern crate error_chain;
+extern crate hexplay;
 
 use std::fs::File;
 use std::io::prelude::*;
+use hexplay::HexViewBuilder;
 
 mod errors;
 mod macho;
@@ -15,14 +17,20 @@ fn run() -> Result<()> {
     let mut f = File::open("../program").chain_err(
         || "cannot open program file",
     )?;
-    let mut bin: Vec<u8> = vec![];
-    f.read_to_end(&mut bin).chain_err(|| "error reading bin")?;
+    let mut data: Vec<u8> = vec![];
+    f.read_to_end(&mut data).chain_err(|| "error reading bin")?;
 
-    let bin = parser::Macho::parse_bin(&bin).chain_err(
+    let bin = parser::Macho::parse_bin(&data).chain_err(
         || "parse MachO binary failed",
     )?;
 
     println!("bin: {:#?}", bin);
+
+    let text = bin.text().chain_err(|| "cannot find program text")?;
+
+    let view = HexViewBuilder::new(&text).row_width(16).finish();
+
+    println!("text\n: {}", view);
 
     return Ok(());
 }

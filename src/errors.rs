@@ -1,1 +1,3 @@
-error_chain!{}
+error_chain!{
+    errors { ErrNoTextSegment ErrNoTextSection }
+}

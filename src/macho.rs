@@ -2,16 +2,30 @@ use errors::*;
 
 #[derive(Debug)]
 pub struct Bin {
+    pub data: Vec<u8>,
     pub header: Header,
     pub load_commands: LoadCommands,
 }
 
 impl Bin {
     pub fn text(&self) -> Result<Vec<u8>> {
-        bail!("nyi");
+        let mut it = self.load_commands.segments.iter();
+        let textseg = it.find(|seg| seg.name == "__TEXT").ok_or(
+            ErrorKind::ErrNoTextSegment,
+        )?;
+
+        let mut it = textseg.section_headers.iter();
+        let textsec = it.find(|h| h.section_name == "__text").ok_or(
+            ErrorKind::ErrNoTextSegment,
+        )?;
+
+        let start = textsec.offset as usize;
+        let size = textsec.size as usize;
+        let text = &self.data[start..start + size];
+        return Ok(text.to_vec());
     }
 
-    pub fn registers_init() -> Vec<u8> {
+    pub fn registers_init() -> Result<Vec<u8>> {
         bail!("nyi");
     }
 }

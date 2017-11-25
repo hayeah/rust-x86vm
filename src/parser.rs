@@ -20,15 +20,14 @@ impl Macho {
     }
 
     pub fn parse_bin(data: &[u8]) -> Result<Bin> {
-        let data = data.to_vec();
-
-        let parser = Macho { data: data };
+        let parser = Macho { data: data.to_vec() };
         let header = parser.parse_header().chain_err(|| "header parse fail")?;
         let lcs = parser.parse_load_commands(&header).chain_err(
             || "header parse fail",
         )?;
 
         return Ok(Bin {
+            data: data.to_vec(),
             header: header,
             load_commands: lcs,
         });
