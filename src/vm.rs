@@ -1,11 +1,12 @@
 use macho::Bin;
 use errors::*;
 
-use byteorder::{LittleEndian, ReadBytesExt};
+use byteorder::{ByteOrder, LittleEndian, ReadBytesExt};
+use hexplay::HexViewBuilder;
 
 #[derive(Debug)]
 pub struct VM {
-    pub memory: Vec<u8>,
+    pub memory: Vec<u32>,
     pub registers: X86Registers,
 
     // interrupt handlers and syscall use this to signal exit
@@ -14,11 +15,34 @@ pub struct VM {
 
 type ExitStatus = Option<usize>;
 
+fn hexdump(buf: &[u8]) {
+    let view = HexViewBuilder::new(&buf).row_width(16).finish();
+    println!("{}", view);
+}
+
+fn getbyte(mem: &[u32], i: u32) -> u8 {
+    println!(
+        "word[{} byte={}]: {:x} byte={:x}",
+        i as usize / 4,
+        i,
+        mem[(i as usize) / 4],
+        mem[(i as usize) / 4] >> ((i % 4) * 8),
+    );
+    return ((mem[(i as usize) / 4] >> ((i % 4) * 8)) & 0xff) as u8;
+}
+
+fn readu32(buf: &[u8]) -> u32 {
+    return LittleEndian::read_u32(buf);
+}
+
 impl VM {
     pub fn new(memsize: usize) -> VM {
-        let mut memory: Vec<u8> = Vec::with_capacity(memsize);
+        if memsize % 4 != 0 {
+            panic!("VM memory must by multiples of 4 bytes (32 bit)")
+        }
+        let mut memory: Vec<u32> = Vec::with_capacity(memsize / 4);
         unsafe {
-            memory.set_len(memsize);
+            memory.set_len(memsize / 4);
         }
 
         let registers = X86Registers::default();
@@ -31,10 +55,18 @@ impl VM {
     }
 
     pub fn run(&mut self, bin: &Bin) -> Result<()> {
-        let registers = bin.init_registers();
+        let text = bin.text_section()?;
+        let text_address = bin.text_address()?;
 
-        // init registers
-        self.registers = registers;
+        // init registers if using LC_UNIXTHREAD
+        if let Some(ref unixthread) = bin.load_commands.unixthread {
+            self.registers = unixthread.registers.clone();
+        }
+
+        if let Some(ref main) = bin.load_commands.main {
+            self.registers.eip = main.entry_offset as u32 + text_address;
+        }
+
         self.registers.esp = (self.memory.len() - 1) as u32;
 
         // load text section into memory
@@ -48,10 +80,16 @@ impl VM {
             // text's location in memory
             let address = text.address as usize;
 
-            let textmem = &mut self.memory[address..address + size];
             let textdata = &bin.data[offset..offset + size];
 
-            textmem.copy_from_slice(textdata);
+            unsafe {
+                let ptr = self.memory.as_ptr() as *mut u8;
+                let memu8 = ::std::slice::from_raw_parts_mut(ptr, self.memory.len() * 4);
+                let textmem = &mut memu8[address..address + size];
+                textmem.copy_from_slice(textdata);
+
+                // println!("text: {:?}", &bin.data[offset..offset + size]);
+            }
         }
 
         self.exit_status = None;
@@ -59,52 +97,67 @@ impl VM {
         return self.exec();
     }
 
-    fn exec(&mut self) -> Result<()> {
-        // let regs = &mut self.registers;
-        // let mem = &mut self.memory;
-        // let eip = &mut regs.eip;
+    // provide a view of the vm memory in bytes
+    fn memu8(&mut self) -> &mut [u8] {
+        unsafe {
+            let ptr = self.memory.as_ptr() as *mut u8;
+            let mem = ::std::slice::from_raw_parts_mut(ptr, self.memory.len() * 4);
+            return mem;
+        }
+    }
 
-        println!("bin: {:?}", &self.memory[0..10]);
+    fn push(&mut self, val: u32) {
+        self.memory[(self.registers.esp / 4) as usize] = val;
+        self.registers.esp -= 4;
+    }
+
+    fn exec(&mut self) -> Result<()> {
+        // unsafe byte view into the vm memory
+        let memu8: &[u8];
+
+        unsafe {
+            let ptr = self.memory.as_ptr() as *mut u8;
+            memu8 = ::std::slice::from_raw_parts_mut(ptr, self.memory.len() * 4);
+        }
 
         loop {
             let i = self.registers.eip as usize;
-            let op = self.memory[i];
+            let op = memu8[i];
 
             println!("eip: {:x}", i);
-            println!("text: {:?}", &self.memory[i..i + 14]);
-
-            println!("trace op: {:x}", op);
+            hexdump(&memu8[i..i + 16]);
 
             match op {
                 // mov imm8 eax
                 0xb8 => {
-                    let i2 = i + 5;
-                    let mut valbuf = &self.memory[i + 1..i2];
-                    let val = valbuf.read_u32::<LittleEndian>().unwrap();
-                    self.registers.eax = val;
-                    self.registers.eip = i2 as u32;
+                    self.registers.eax = readu32(&memu8[i + 1..]);
+                    self.registers.eip += 5;
                 }
 
                 // push imm8
                 0x6a => {
-                    let i2 = i + 2;
-                    let val = self.memory[i + 1];
-                    self.memory[self.registers.esp as usize] = val;
-                    self.registers.esp -= 1;
-                    self.registers.eip = i2 as u32;
+                    let val = memu8[i + 1] as u32;
+                    self.push(val);
+                    self.registers.eip += 2;
+                }
+
+                // push reg
+                0x50 => {
+                    let val = self.registers.eax;
+                    self.push(val);
+                    self.registers.eip += 1;
                 }
 
                 // int
                 0xcd => {
-                    let i2 = i + 2;
-                    let val = self.memory[i + 1];
+                    let val = memu8[i + 1];
                     self.handle_interrupt(val)?;
 
                     if !self.exit_status.is_none() {
                         return Ok(());
                     }
 
-                    self.registers.eip = i2 as u32;
+                    self.registers.eip += 2;
                 }
 
                 _ => panic!("invalid instruction"),
@@ -133,7 +186,7 @@ impl VM {
         match n {
             // exit
             0x1 => {
-                let status = self.memory[(self.registers.esp + 1) as usize];
+                let status = self.memory[((self.registers.esp + 4) / 4) as usize];
                 // TODO convert u8 into int8 (not truncating)
                 self.exit_status = Some(status as usize);
             }

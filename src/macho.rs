@@ -24,8 +24,14 @@ impl Bin {
         return Ok(textsec.clone());
     }
 
-    pub fn init_registers(&self) -> X86Registers {
-        return self.load_commands.unixthread.registers.clone();
+    pub fn text_address(&self) -> Result<u32> {
+        let mut it = self.load_commands.segments.iter();
+
+        let textseg = it.find(|seg| seg.name == "__TEXT").ok_or(
+            ErrorKind::ErrNoTextSegment,
+        )?;
+
+        return Ok(textseg.vm_address);
     }
 }
 
@@ -59,7 +65,9 @@ pub struct LoadCommands {
     pub segments: Vec<Segment>,
 
     // assumed to have just one
-    pub unixthread: UnixThread,
+    pub unixthread: Option<UnixThread>,
+
+    pub main: Option<LC_Main>,
 
     pub unsupported: Vec<UnsupportedLoadCommand>,
 }
@@ -84,6 +92,12 @@ pub struct UnixThread {
     pub flavor: u32,
     pub count: u32,
     pub registers: X86Registers,
+}
+
+#[derive(Debug)]
+pub struct LC_Main {
+    pub entry_offset: u64, // 8 .. 16
+    pub stack_size: u64, // 16 .. 24
 }
 
 #[derive(Debug)]

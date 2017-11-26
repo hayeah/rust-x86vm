@@ -14,7 +14,6 @@ mod vm;
 
 use errors::*;
 
-
 fn run() -> Result<()> {
     let args: Vec<String> = ::std::env::args().collect();
 
@@ -35,9 +34,9 @@ fn run() -> Result<()> {
 
     // println!("bin: {:#?}", bin);
 
-    let text = bin.text().chain_err(|| "cannot find program text")?;
-    let view = HexViewBuilder::new(&text).row_width(16).finish();
-    println!("text\n: {}", view);
+    // let text = bin.text().chain_err(|| "cannot find program text")?;
+    // let view = HexViewBuilder::new(&text).row_width(16).finish();
+    // println!("text\n: {}", view);
 
     // 1024 KB
     let mut m = vm::VM::new(1024 * 1024);

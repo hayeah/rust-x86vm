@@ -66,6 +66,7 @@ impl Macho {
         let mut segments: Vec<Segment> = Vec::new();
         let mut unsupported: Vec<UnsupportedLoadCommand> = Vec::new();
         let mut unixthread: Option<UnixThread> = None;
+        let mut main: Option<LC_Main> = None;
 
         let mut pos: usize = 0;
         for _ in 0..header.load_commands_count {
@@ -84,6 +85,7 @@ impl Macho {
             let segdata = &data[pos..pos + size];
 
             match cmd {
+                // LC_SEGMENT
                 1 => {
                     let segment = self.parse_lc_segment(segdata).chain_err(
                         || "LC_SEGMENT parse error",
@@ -91,12 +93,21 @@ impl Macho {
 
                     segments.push(segment);
                 }
+                // LC_UNIXTHREAD
                 5 => {
                     let ut = self.parse_lc_unixthread(segdata).chain_err(
                         || "LC_UNIXTHREAD parse error",
                     )?;
 
                     unixthread = Some(ut);
+                }
+                // LC_MAIN
+                0x80000028 => {
+                    let m = self.parse_lc_main(segdata).chain_err(
+                        || "LC_MAIN parse error",
+                    )?;
+
+                    main = Some(m);
                 }
                 _ => {
                     unsupported.push(UnsupportedLoadCommand {
@@ -110,14 +121,28 @@ impl Macho {
             pos += size as usize;
         }
 
-        if unixthread.is_none() {
-            bail!("did not find LC_UNIXTHREAD");
+        if unixthread.is_none() && main.is_none() {
+            bail!("did not find LC_UNIXTHREAD or LC_MAIN");
         }
 
         return Ok(LoadCommands {
             segments: segments,
             unsupported: unsupported,
-            unixthread: unixthread.unwrap(),
+            unixthread: unixthread,
+            main: main,
+        });
+    }
+
+    fn parse_lc_main(&self, data: &[u8]) -> Result<LC_Main> {
+        let mut u64words = [0 as u64; 2];
+        let mut r = Cursor::new(&data[8..]);
+        r.read_u64_into::<LittleEndian>(&mut u64words).chain_err(
+            || "LC_MAIN read fail",
+        )?;
+
+        return Ok(LC_Main {
+            entry_offset: u64words[0],
+            stack_size: u64words[1],
         });
     }
 
