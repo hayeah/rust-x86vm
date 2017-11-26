@@ -9,8 +9,9 @@ pub struct Bin {
 }
 
 impl Bin {
-    pub fn text(&self) -> Result<Vec<u8>> {
+    pub fn text_section(&self) -> Result<SectionHeader> {
         let mut it = self.load_commands.segments.iter();
+
         let textseg = it.find(|seg| seg.name == "__TEXT").ok_or(
             ErrorKind::ErrNoTextSegment,
         )?;
@@ -20,10 +21,7 @@ impl Bin {
             ErrorKind::ErrNoTextSegment,
         )?;
 
-        let start = textsec.offset as usize;
-        let size = textsec.size as usize;
-        let text = &self.data[start..start + size];
-        return Ok(text.to_vec());
+        return Ok(textsec.clone());
     }
 
     pub fn init_registers(&self) -> X86Registers {
@@ -42,7 +40,7 @@ pub struct Header {
     pub flags: u32,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SectionHeader {
     // 0..16
     pub section_name: String,

@@ -31,30 +31,28 @@ impl VM {
     }
 
     pub fn run(&mut self, bin: &Bin) -> Result<()> {
-        let text = bin.text()?;
         let registers = bin.init_registers();
 
         // init registers
         self.registers = registers;
         self.registers.esp = (self.memory.len() - 1) as u32;
 
-        // fixme: probably loading the text to the wrong place -.- how does alignment work?
-        // temp fix: just minus 0x1000 to get the right EIP for now...
-        self.registers.eip -= 0x1000;
-
-
-        // load program into memory
+        // load text section into memory
         {
-            let binregion = &mut self.memory[0..bin.data.len()];
-            binregion.copy_from_slice(&bin.data);
-        }
+            let text = bin.text_section()?;
 
-        // let i = self.registers.eip as usize;
-        // {
-        //     // Annoyingly the dst and src must have the same size. We need to workout the exact memory region to copy the text into.
-        //     let textregion = &mut self.memory[i..i + text.len()];
-        //     textregion.copy_from_slice(&text);
-        // }
+            let size = text.size as usize;
+
+            // text's offset in binary
+            let offset = text.offset as usize;
+            // text's location in memory
+            let address = text.address as usize;
+
+            let textmem = &mut self.memory[address..address + size];
+            let textdata = &bin.data[offset..offset + size];
+
+            textmem.copy_from_slice(textdata);
+        }
 
         self.exit_status = None;
 
