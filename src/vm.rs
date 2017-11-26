@@ -147,6 +147,41 @@ impl VM {
                     self.push(val);
                     self.registers.eip += 1;
                 }
+                0x51 => {
+                    let val = self.registers.ecx;
+                    self.push(val);
+                    self.registers.eip += 1;
+                }
+                0x52 => {
+                    let val = self.registers.edx;
+                    self.push(val);
+                    self.registers.eip += 1;
+                }
+                0x53 => {
+                    let val = self.registers.ebx;
+                    self.push(val);
+                    self.registers.eip += 1;
+                }
+                0x54 => {
+                    let val = self.registers.esp;
+                    self.push(val);
+                    self.registers.eip += 1;
+                }
+                0x55 => {
+                    let val = self.registers.ebp;
+                    self.push(val);
+                    self.registers.eip += 1;
+                }
+                0x56 => {
+                    let val = self.registers.esi;
+                    self.push(val);
+                    self.registers.eip += 1;
+                }
+                0x57 => {
+                    let val = self.registers.edi;
+                    self.push(val);
+                    self.registers.eip += 1;
+                }
 
                 // int
                 0xcd => {
